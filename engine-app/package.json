@@ -1,0 +1,42 @@
+{
+  "name": "utoo-engine",
+  "version": "1.0.0",
+  "description": "UTOO 香水设计自动化出图引擎",
+  "private": true,
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "electron:build": "npm run build && tsc -p tsconfig.electron.json && electron-builder --config electron-builder.config.js"
+  },
+  "dependencies": {
+    "@ai-sdk/google": "^3.0.60",
+    "@google/genai": "^1.0.1",
+    "@tldraw/tldraw": "^3.9.0",
+    "@xyflow/react": "^12.6.4",
+    "ai": "^6.0.154",
+    "jszip": "^3.10.1",
+    "lucide-react": "^0.511.0",
+    "motion": "^12.7.3",
+    "p-queue": "^8.1.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-router-dom": "^7.5.2",
+    "zod": "^4.3.6",
+    "zustand": "^5.0.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.1",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "@vitejs/plugin-react": "^4.4.1",
+    "autoprefixer": "^10.4.21",
+    "electron": "^41.2.0",
+    "electron-builder": "^26.8.1",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.3"
+  }
+}

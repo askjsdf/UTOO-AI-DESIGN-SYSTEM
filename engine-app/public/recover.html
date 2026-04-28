@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>UTOO 画布图片恢复工具</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0e0e0e; color: #d0d0d0;
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 13px; line-height: 1.6;
+      display: flex; flex-direction: column; align-items: center;
+      padding: 40px 20px; min-height: 100vh;
+    }
+    h1 { font-size: 20px; color: #fff; margin-bottom: 6px; }
+    .sub { color: #555; margin-bottom: 32px; }
+    .card {
+      background: #1a1a1a; border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 12px; padding: 24px; width: 100%; max-width: 680px;
+      margin-bottom: 16px;
+    }
+    .card h2 { font-size: 14px; color: #e0e0e0; margin-bottom: 16px; }
+    button {
+      padding: 10px 24px; border-radius: 8px; border: none;
+      cursor: pointer; font-size: 13px; font-weight: 500;
+      transition: opacity 0.15s;
+    }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-primary { background: #2dd4bf; color: #0e0e0e; }
+    .btn-primary:hover:not(:disabled) { opacity: 0.85; }
+    .btn-secondary {
+      background: rgba(255,255,255,0.08); color: #d0d0d0;
+      border: 1px solid rgba(255,255,255,0.12);
+    }
+    #log {
+      background: #111; border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 8px; padding: 16px;
+      height: 320px; overflow-y: auto;
+      font-family: 'SF Mono', Monaco, monospace; font-size: 11px;
+      line-height: 1.8;
+    }
+    .log-ok   { color: #2dd4bf; }
+    .log-warn { color: #f59e0b; }
+    .log-err  { color: #f87171; }
+    .log-info { color: #888; }
+    .stats {
+      display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap;
+    }
+    .stat {
+      background: rgba(255,255,255,0.04); border-radius: 8px;
+      padding: 10px 16px; flex: 1; min-width: 120px; text-align: center;
+    }
+    .stat-val { font-size: 28px; font-weight: 700; color: #fff; }
+    .stat-label { font-size: 10px; color: #555; margin-top: 2px; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    #progress {
+      height: 4px; background: rgba(255,255,255,0.06);
+      border-radius: 2px; margin-top: 12px; overflow: hidden;
+      display: none;
+    }
+    #progress-bar {
+      height: 100%; background: #2dd4bf;
+      border-radius: 2px; transition: width 0.3s;
+    }
+  </style>
+</head>
+<body>
+
+<h1>UTOO 画布图片恢复工具</h1>
+<p class="sub">直接从 IndexedDB 读取图片并保存到本地，无需打开画布</p>
+
+<div class="card" style="border-color: rgba(248,113,113,0.3);">
+  <h2 style="color:#f87171;">⚡ 一键清空画布数据（已保存图片时使用）</h2>
+  <p style="color:#888; font-size:12px; margin-bottom:16px;">不读取任何数据，直接删除所有画布 IDB 数据库 + OPFS 图片 + 迁移标记。适合已导出图片、需要解除崩溃状态的情况。</p>
+  <div class="actions" style="flex-wrap:wrap; gap:10px;">
+    <button class="btn-primary" id="btnNukeClear" style="background:#f87171; color:#fff;">清空全部画布数据</button>
+    <button class="btn-secondary" id="btnClearTasks" style="border-color:rgba(251,146,60,0.5); color:#fb923c;">清空任务记录（解决任务队列崩溃）</button>
+    <button class="btn-secondary" id="btnRunGC" style="border-color:rgba(45,212,191,0.4); color:#2dd4bf;">清理孤立 OPFS 图片（GC）</button>
+  </div>
+  <div id="clearLog" style="margin-top:12px; color:#888; font-size:12px; white-space:pre-wrap;"></div>
+</div>
+
+<div class="card">
+  <h2>第一步：扫描画布数据库</h2>
+  <div class="actions">
+    <button class="btn-primary" id="btnScan">扫描 IndexedDB</button>
+  </div>
+  <div id="progress"><div id="progress-bar" style="width:0%"></div></div>
+</div>
+
+<div class="card">
+  <div class="stats">
+    <div class="stat"><div class="stat-val" id="statDbs">-</div><div class="stat-label">画布数据库</div></div>
+    <div class="stat"><div class="stat-val" id="statImgs">-</div><div class="stat-label">发现图片</div></div>
+    <div class="stat"><div class="stat-val" id="statSaved">-</div><div class="stat-label">已保存</div></div>
+  </div>
+  <div id="log"><span class="log-info">等待扫描…</span></div>
+</div>
+
+<div class="card">
+  <h2>第二步：导出图片到本地文件夹</h2>
+  <div class="actions">
+    <button class="btn-primary" id="btnExport" disabled>选择文件夹并导出</button>
+    <button class="btn-secondary" id="btnClear" disabled>扫描完成后可清空 IndexedDB（谨慎）</button>
+  </div>
+</div>
+
+<script>
+  const logEl = document.getElementById('log')
+  const statDbs = document.getElementById('statDbs')
+  const statImgs = document.getElementById('statImgs')
+  const statSaved = document.getElementById('statSaved')
+  const progressEl = document.getElementById('progress')
+  const progressBar = document.getElementById('progress-bar')
+  const btnExport = document.getElementById('btnExport')
+  const btnScan = document.getElementById('btnScan')
+
+  let foundImageAssets = [] // { dbName, asset }
+
+  function log(msg, type = 'info') {
+    const span = document.createElement('span')
+    span.className = `log-${type}`
+    span.textContent = msg + '\n'
+    logEl.appendChild(span)
+    logEl.scrollTop = logEl.scrollHeight
+  }
+
+  function setProgress(pct) {
+    progressEl.style.display = 'block'
+    progressBar.style.width = pct + '%'
+  }
+
+  // 从 IndexedDB 读取某个 objectStore 的所有记录
+  async function readAllRecords(db, storeName) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([storeName], 'readonly')
+      const store = tx.objectStore(storeName)
+      const req = store.getAll()
+      req.onsuccess = () => resolve(req.result || [])
+      req.onerror = () => reject(req.error)
+    })
+  }
+
+  async function openDb(name, version) {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(name, version)
+      req.onsuccess = () => resolve(req.result)
+      req.onerror = () => reject(req.error)
+      req.onblocked = () => reject(new Error('DB blocked'))
+    })
+  }
+
+  async function scanDatabases() {
+    logEl.innerHTML = ''
+    foundImageAssets = []
+    statDbs.textContent = '-'
+    statImgs.textContent = '-'
+    statSaved.textContent = '0'
+    btnExport.disabled = true
+
+    log('扫描所有 IndexedDB 数据库…', 'info')
+
+    let allDbs
+    try {
+      allDbs = await indexedDB.databases()
+    } catch(e) {
+      log('无法列出数据库（Safari 可能不支持）: ' + e.message, 'err')
+      return
+    }
+
+    log(`共发现 ${allDbs.length} 个数据库`, 'info')
+
+    // 找所有可能是 tldraw 的数据库（包含 utoo-canvas 或 TLDRAW）
+    const tldrawDbs = allDbs.filter(d =>
+      d.name && (
+        d.name.includes('utoo-canvas') ||
+        d.name.includes('TLDRAW') ||
+        d.name.includes('tldraw')
+      )
+    )
+
+    if (tldrawDbs.length === 0) {
+      log('未找到 UTOO 画布数据库，列出所有数据库名：', 'warn')
+      allDbs.forEach(d => log('  ' + d.name, 'info'))
+      return
+    }
+
+    log(`找到 ${tldrawDbs.length} 个 UTOO 画布数据库`, 'ok')
+    statDbs.textContent = tldrawDbs.length
+
+    for (let di = 0; di < tldrawDbs.length; di++) {
+      const dbInfo = tldrawDbs[di]
+      log(`\n[${di+1}/${tldrawDbs.length}] ${dbInfo.name}`, 'info')
+      setProgress(Math.round((di / tldrawDbs.length) * 50))
+
+      let db
+      try {
+        db = await openDb(dbInfo.name, dbInfo.version)
+      } catch(e) {
+        log('  打开失败: ' + e.message, 'err')
+        continue
+      }
+
+      const storeNames = Array.from(db.objectStoreNames)
+      log('  存储: ' + storeNames.join(', '), 'info')
+
+      for (const storeName of storeNames) {
+        let records
+        try {
+          records = await readAllRecords(db, storeName)
+        } catch(e) {
+          log(`  读取 ${storeName} 失败: ` + e.message, 'warn')
+          continue
+        }
+
+        // 查找 image asset 记录（tldraw v2 schema）
+        const imageAssets = records.filter(r =>
+          r && r.typeName === 'asset' && r.type === 'image' &&
+          r.props && r.props.src && r.props.src.startsWith('data:image')
+        )
+
+        if (imageAssets.length > 0) {
+          log(`  在 [${storeName}] 找到 ${imageAssets.length} 张图片`, 'ok')
+          imageAssets.forEach(a => foundImageAssets.push({ dbName: dbInfo.name, asset: a }))
+        }
+
+        // 也检查 snapshots 里可能有的格式
+        const snapAssets = records.filter(r =>
+          r && typeof r === 'object' &&
+          !imageAssets.includes(r) &&
+          JSON.stringify(r).includes('"type":"image"') &&
+          JSON.stringify(r).includes('data:image')
+        )
+        if (snapAssets.length > 0) {
+          log(`  在 [${storeName}] 发现 ${snapAssets.length} 条含图片的快照记录`, 'warn')
+        }
+      }
+
+      db.close()
+    }
+
+    setProgress(100)
+    statImgs.textContent = foundImageAssets.length
+    statSaved.textContent = '0'
+
+    if (foundImageAssets.length === 0) {
+      log('\n未找到图片资产。可能的原因：', 'warn')
+      log('  1. 图片存储格式不是标准 base64 data URL', 'info')
+      log('  2. tldraw 版本使用了不同的 schema', 'info')
+      log('  尝试检查所有数据库内容…', 'info')
+      await deepScan(tldrawDbs)
+    } else {
+      log(`\n✓ 共找到 ${foundImageAssets.length} 张图片，点击"选择文件夹并导出"`, 'ok')
+      btnExport.disabled = false
+    }
+  }
+
+  // 深度扫描：遍历所有记录找 data:image
+  async function deepScan(tldrawDbs) {
+    for (const dbInfo of tldrawDbs) {
+      let db
+      try { db = await openDb(dbInfo.name, dbInfo.version) } catch { continue }
+
+      for (const storeName of Array.from(db.objectStoreNames)) {
+        let records
+        try { records = await readAllRecords(db, storeName) } catch { continue }
+
+        // 深度遍历对象找 data:image
+        function extractImages(obj, path = '') {
+          if (!obj || typeof obj !== 'object') return
+          if (typeof obj === 'string' && obj.startsWith('data:image')) {
+            foundImageAssets.push({
+              dbName: dbInfo.name,
+              asset: { id: path, props: { src: obj, mimeType: 'image/png', name: path } }
+            })
+            return
+          }
+          for (const key of Object.keys(obj)) {
+            const val = obj[key]
+            if (typeof val === 'string' && val.startsWith('data:image') && val.length > 1000) {
+              foundImageAssets.push({
+                dbName: dbInfo.name,
+                asset: { id: `${path}.${key}`, props: { src: val, mimeType: 'image/png', name: key } }
+              })
+            } else if (val && typeof val === 'object') {
+              extractImages(val, `${path}.${key}`)
+            }
+          }
+        }
+
+        records.forEach((r, i) => extractImages(r, `${storeName}[${i}]`))
+      }
+
+      db.close()
+    }
+
+    statImgs.textContent = foundImageAssets.length
+    if (foundImageAssets.length > 0) {
+      log(`深度扫描找到 ${foundImageAssets.length} 张图片`, 'ok')
+      btnExport.disabled = false
+    } else {
+      log('深度扫描也未找到图片，IndexedDB 数据可能已损坏或格式不同', 'err')
+    }
+  }
+
+  async function exportImages() {
+    if (foundImageAssets.length === 0) { alert('没有找到图片'); return }
+
+    let dirHandle
+    try {
+      dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' })
+    } catch(e) {
+      log('取消了目录选择', 'warn')
+      return
+    }
+
+    log(`\n开始导出 ${foundImageAssets.length} 张图片…`, 'info')
+    btnExport.disabled = true
+    let saved = 0, failed = 0
+
+    for (let i = 0; i < foundImageAssets.length; i++) {
+      const { dbName, asset } = foundImageAssets[i]
+      const src = asset.props?.src || asset.props?.src
+      setProgress(Math.round((i / foundImageAssets.length) * 100))
+
+      try {
+        const mimeMatch = src.match(/data:([^;]+);/)
+        const mime = mimeMatch ? mimeMatch[1] : 'image/png'
+        const ext = mime.includes('jpeg') ? 'jpg' : mime.includes('webp') ? 'webp' : 'png'
+
+        // data URL → blob
+        const res = await fetch(src)
+        const blob = await res.blob()
+
+        // 用项目名 + 序号命名
+        const projectPart = dbName.replace(/.*utoo-canvas-/, '').slice(0, 8)
+        const fileName = `utoo_${projectPart}_${String(i + 1).padStart(4, '0')}.${ext}`
+
+        const fileHandle = await dirHandle.getFileHandle(fileName, { create: true })
+        const writable = await fileHandle.createWritable()
+        await writable.write(blob)
+        await writable.close()
+
+        saved++
+        statSaved.textContent = saved
+        log(`  ✓ ${fileName}  (${Math.round(blob.size/1024)}KB)`, 'ok')
+      } catch(e) {
+        failed++
+        log(`  ✗ 第 ${i+1} 张失败: ${e.message}`, 'err')
+      }
+
+      // 每 5 张让浏览器喘口气，避免崩溃
+      if (i % 5 === 4) await new Promise(r => setTimeout(r, 50))
+    }
+
+    setProgress(100)
+    log(`\n导出完成！成功 ${saved} 张，失败 ${failed} 张`, saved > 0 ? 'ok' : 'err')
+    btnExport.disabled = false
+  }
+
+  // ── 一键清空（不扫描、不读数据）────────────────────────────────────
+  document.getElementById('btnNukeClear').addEventListener('click', async () => {
+    if (!confirm('⚠️ 将删除所有画布 IDB 数据库、OPFS 图片和迁移标记。\n图片请确认已导出！\n\n确认清空？')) return
+    const el = document.getElementById('clearLog')
+    el.textContent = ''
+    const add = (msg) => { el.textContent += msg + '\n' }
+
+    try {
+      const allDbs = await indexedDB.databases()
+      const targets = allDbs.filter(d => d.name && (
+        d.name.includes('utoo-canvas') || d.name.includes('TLDRAW') || d.name.includes('tldraw')
+      ))
+      add(`找到 ${targets.length} 个画布数据库`)
+      for (const db of targets) {
+        await new Promise((res, rej) => {
+          const req = indexedDB.deleteDatabase(db.name)
+          req.onsuccess = res
+          req.onerror = rej
+          req.onblocked = () => { add('  被阻塞，尝试继续…'); res(null) }
+        })
+        add(`  ✓ 已删除: ${db.name}`)
+      }
+    } catch(e) { add('IDB 清除出错: ' + e.message) }
+
+    try {
+      const root = await navigator.storage.getDirectory()
+      await root.removeEntry('canvas-images', { recursive: true })
+      add('✓ OPFS canvas-images 已清除')
+    } catch { add('OPFS 无图片目录，跳过') }
+
+    const keys = ['utoo_canvas_opfs_migration_v1','utoo_migration_log',
+                  'utoo_migration_processing','utoo_migration_bad_keys']
+    keys.forEach(k => localStorage.removeItem(k))
+    add('✓ 迁移标记已清除')
+    add('\n✅ 清空完成！现在打开 localhost:5173 即可正常进入。')
+    document.getElementById('btnNukeClear').textContent = '✅ 已清空'
+    document.getElementById('btnNukeClear').disabled = true
+  })
+
+  // ── 清空任务记录（utoo-engine 的 tasks store）──────────────────────
+  document.getElementById('btnClearTasks').addEventListener('click', async () => {
+    if (!confirm('⚠️ 将清空所有任务记录（包括预览图）。\n任务历史会丢失，但不影响工作流和画布内容。\n\n确认清空？')) return
+    const el = document.getElementById('clearLog')
+    el.textContent = ''
+    const add = (msg) => { el.textContent += msg + '\n' }
+
+    try {
+      const db = await new Promise((res, rej) => {
+        const req = indexedDB.open('utoo-engine', 5)
+        req.onsuccess = () => res(req.result)
+        req.onerror = () => rej(req.error)
+        // 如果版本不匹配就直接打开已有版本
+        req.onblocked = () => rej(new Error('DB blocked'))
+      }).catch(async () => {
+        // 尝试不指定版本打开
+        return new Promise((res, rej) => {
+          const req = indexedDB.open('utoo-engine')
+          req.onsuccess = () => res(req.result)
+          req.onerror = () => rej(req.error)
+        })
+      })
+
+      await new Promise((res, rej) => {
+        const tx = db.transaction(['tasks'], 'readwrite')
+        tx.objectStore('tasks').clear()
+        tx.oncomplete = res
+        tx.onerror = () => rej(tx.error)
+      })
+      add('✓ tasks 已清空')
+
+      // 同时清空 chat（可能含有附图的对话）
+      try {
+        await new Promise((res, rej) => {
+          const tx = db.transaction(['chat_messages'], 'readwrite')
+          tx.objectStore('chat_messages').clear()
+          tx.oncomplete = res
+          tx.onerror = () => rej(tx.error)
+        })
+        add('✓ chat_messages 已清空')
+      } catch { add('chat_messages 清空跳过（无此 store）') }
+
+      db.close()
+      add('\n✅ 清空完成！刷新 localhost:5173 即可正常进入。')
+      document.getElementById('btnClearTasks').textContent = '✅ 已清空'
+      document.getElementById('btnClearTasks').disabled = true
+    } catch(e) {
+      add('❌ 出错: ' + e.message)
+    }
+  })
+
+  // ── OPFS 垃圾回收（清理孤立图片）──────────────────────────────────
+  document.getElementById('btnRunGC').addEventListener('click', async () => {
+    const el = document.getElementById('clearLog')
+    const btn = document.getElementById('btnRunGC')
+    btn.disabled = true
+    btn.textContent = '扫描中…'
+    el.textContent = ''
+    const add = (msg) => { el.textContent += msg + '\n' }
+
+    try {
+      // 1. 收集所有 IDB 中引用的 assetId
+      const LOCAL_ASSET_PREFIX = '/__local_asset__/'
+      const referencedIds = new Set()
+
+      const allDbs = await indexedDB.databases()
+      const canvasDbs = allDbs.filter(d => d.name && d.name.includes('utoo-canvas'))
+      add(`找到 ${canvasDbs.length} 个画布数据库，收集引用的 assetId…`)
+
+      for (const dbInfo of canvasDbs) {
+        try {
+          const db = await new Promise((res, rej) => {
+            const req = indexedDB.open(dbInfo.name, dbInfo.version)
+            req.onsuccess = () => res(req.result)
+            req.onerror = () => rej(req.error)
+          })
+          const storeNames = Array.from(db.objectStoreNames)
+          if (!storeNames.includes('records')) { db.close(); continue }
+          await new Promise((res, rej) => {
+            const tx = db.transaction(['records'], 'readonly')
+            const req = tx.objectStore('records').openCursor()
+            req.onsuccess = (e) => {
+              const cursor = e.target.result
+              if (!cursor) { res(); return }
+              const r = cursor.value
+              if (r?.typeName === 'asset' && r?.type === 'image' &&
+                  typeof r?.props?.src === 'string' &&
+                  r.props.src.startsWith(LOCAL_ASSET_PREFIX)) {
+                referencedIds.add(decodeURIComponent(r.props.src.slice(LOCAL_ASSET_PREFIX.length)))
+              }
+              cursor.continue()
+            }
+            req.onerror = () => rej(req.error)
+          })
+          db.close()
+        } catch { /* 忽略单个 DB 错误 */ }
+      }
+      add(`共引用 ${referencedIds.size} 个 assetId`)
+
+      // 2. 遍历 OPFS 文件，删除孤立文件（> 1 小时）
+      const SANITIZE = (id) => id.replace(/[^a-zA-Z0-9_-]/g, '_')
+      const now = Date.now()
+      const ONE_HOUR = 60 * 60 * 1000
+
+      let dir
+      try {
+        const root = await navigator.storage.getDirectory()
+        dir = await root.getDirectoryHandle('canvas-images', { create: false })
+      } catch {
+        add('OPFS canvas-images 目录不存在，无需清理')
+        btn.textContent = '✅ 无需清理'
+        btn.disabled = false
+        return
+      }
+
+      let scanned = 0, deleted = 0, freed = 0
+      const entries = []
+      for await (const [name, handle] of dir) {
+        if (handle.kind === 'file') entries.push([name, handle])
+      }
+      scanned = entries.length
+      add(`OPFS 共 ${scanned} 个文件，开始检查…`)
+
+      for (const [filename, fileHandle] of entries) {
+        try {
+          const file = await fileHandle.getFile()
+          if (now - file.lastModified < ONE_HOUR) continue // 新文件跳过
+
+          const baseName = filename.replace(/\.[^.]+$/, '')
+          const isReferenced = [...referencedIds].some(id => SANITIZE(id) === baseName)
+          if (!isReferenced) {
+            freed += file.size
+            await dir.removeEntry(filename)
+            deleted++
+          }
+        } catch { /* 文件已删除，忽略 */ }
+      }
+
+      localStorage.setItem('utoo_opfs_gc_last_run', String(now))
+      add(`\n✅ GC 完成：扫描 ${scanned} 个文件，删除 ${deleted} 个孤立文件，释放 ${(freed / 1024 / 1024).toFixed(2)} MB`)
+      btn.textContent = `✅ 已清理 ${deleted} 个孤立文件`
+    } catch(e) {
+      add('❌ GC 出错: ' + e.message)
+      btn.textContent = '清理孤立 OPFS 图片（GC）'
+    }
+    btn.disabled = false
+  })
+
+  document.getElementById('btnScan').addEventListener('click', scanDatabases)
+  document.getElementById('btnExport').addEventListener('click', exportImages)
+  document.getElementById('btnClear').addEventListener('click', async () => {
+    if (!confirm('⚠️ 这将删除画布中的所有数据（包括布局信息），图片请先导出！确认清空？')) return
+    const allDbs = await indexedDB.databases()
+    const tldrawDbs = allDbs.filter(d => d.name && d.name.includes('utoo-canvas'))
+    for (const db of tldrawDbs) {
+      await new Promise((resolve, reject) => {
+        const req = indexedDB.deleteDatabase(db.name)
+        req.onsuccess = resolve
+        req.onerror = reject
+      })
+      log(`已清空数据库: ${db.name}`, 'warn')
+    }
+    log('清空完成，现在可以重新打开 app', 'ok')
+  })
+</script>
+</body>
+</html>
