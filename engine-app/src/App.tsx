@@ -10,6 +10,7 @@ import UsageView from './views/UsageView'
 import LibraryView from './views/LibraryView'
 import { isMigrationDone, migrateCanvasImages, type MigrationProgress } from './services/canvasMigration'
 import { runOPFSGarbageCollection } from './services/imageStore'
+import { sanitizeAllTldrawIDBs } from './services/dataTransfer'
 
 // ── 迁移进度界面 ──────────────────────────────────────────────────────
 
@@ -91,6 +92,11 @@ export default function App() {
       }
 
       if (isMigrationDone()) {
+        // 防御性数据清理：扫描所有 tldraw IDB，把 image asset 非法 w/h 修好
+        // 必须在 CanvasView 挂载之前完成，否则 tldraw schema 校验会抛错
+        await sanitizeAllTldrawIDBs().catch((e) =>
+          console.warn('[sanitize] tldraw IDB 清理失败（不影响功能）:', e)
+        )
         setMigrationState('ready')
         // Phase 3.1：迁移已完成，后台运行 GC（每天最多一次）
         runOPFSGarbageCollection().catch((e) =>
@@ -110,7 +116,10 @@ export default function App() {
         // 迁移失败不阻断 app，继续运行（旧数据仍在 IndexedDB）
       }
 
-      // 迁移完成后立即跑一次 GC（强制，无需等 24h）
+      // 迁移完成后跑一次防御性数据清理 + 立即 GC
+      await sanitizeAllTldrawIDBs().catch((e) =>
+        console.warn('[sanitize] tldraw IDB 清理失败（不影响功能）:', e)
+      )
       runOPFSGarbageCollection(true).catch(() => {})
 
       setMigrationState('ready')
